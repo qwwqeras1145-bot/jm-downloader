@@ -4,6 +4,7 @@ jm-downloader 核心逻辑：查询 / 搜索 / 排行 / 下载 / ZIP 打包 / �
 基于 jmcomic 开源库（https://github.com/hect0x7/jmcomic）
 """
 import os
+import re
 import sys
 import zipfile
 import shutil
@@ -30,6 +31,21 @@ ZIPS_DIR = os.path.join(DOWNLOADS_DIR, "_zips")
 def ensure_dirs():
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     os.makedirs(ZIPS_DIR, exist_ok=True)
+
+
+def normalize_id(raw):
+    """从输入提取漫画 ID：支持 纯数字 / JM123456 / https://.../album/123456/ 等"""
+    s = str(raw).strip()
+    m = re.search(r"(?:album|photos/index/|photo/)(\d{4,})", s, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"JM\s*(\d+)", s, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b(\d{4,})\b", s)
+    if m:
+        return m.group(1)
+    raise ValueError(f"无法识别漫画 ID：{raw}")
 
 
 # ---------------- jmcomic 配置 ----------------
@@ -68,6 +84,7 @@ def new_client():
 
 def about(album_id):
     """查询漫画详情"""
+    album_id = normalize_id(album_id)
     client = new_client()
     album = client.get_album_detail(album_id)
     tags = []
@@ -275,8 +292,9 @@ def start_download(album_id):
     """后台启动单本下载任务，返回是否已启动"""
     if get_state()["running"]:
         raise RuntimeError("已有任务正在进行，请稍候")
+    album_id = normalize_id(album_id)
     ensure_dirs()
-    threading.Thread(target=_download_worker, args=(str(album_id),), daemon=True).start()
+    threading.Thread(target=_download_worker, args=(album_id,), daemon=True).start()
     return True
 
 
@@ -286,7 +304,7 @@ def start_batch(ids):
     """后台批量下载多本漫画（依次下载），返回任务数量"""
     if get_state()["running"]:
         raise RuntimeError("已有任务正在进行，请稍候")
-    ids = [str(i).strip() for i in ids if str(i).strip()]
+    ids = [normalize_id(i) for i in ids if str(i).strip()]
     if not ids:
         raise ValueError("没有有效的漫画 ID")
     ensure_dirs()
@@ -335,11 +353,43 @@ def history():
         for name in sorted(os.listdir(DOWNLOADS_DIR)):
             d = os.path.join(DOWNLOADS_DIR, name)
             if os.path.isdir(d) and name != "_zips":
+                size = 0
+                for dp, _, fs in os.walk(d):
+                    for f in fs:
+                        try:
+                            size += os.path.getsize(os.path.join(dp, f))
+                        except Exception:
+                            pass
                 items.append({
                     "id": name,
                     "dir": d,
                     "files": _count_images(d),
+                    "size": size,
                     "zip": os.path.join(ZIPS_DIR, f"JM{name}.zip")
                             if os.path.exists(os.path.join(ZIPS_DIR, f"JM{name}.zip")) else None,
                 })
     return items
+
+def delete_album(album_id):
+    """删除本地已下载的漫画目录及其 ZIP"""
+    album_id = normalize_id(album_id)
+    album_dir = os.path.join(DOWNLOADS_DIR, album_id)
+    zip_path = os.path.join(ZIPS_DIR, f"JM{album_id}.zip")
+    removed = []
+    if os.path.isdir(album_dir):
+        shutil.rmtree(album_dir, ignore_errors=True)
+        removed.append(album_dir)
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+        removed.append(zip_path)
+    if not removed:
+        raise ValueError(f"本地没有 JM{album_id} 的下载记录")
+    return album_id
+
+def open_dir(album_id):
+    """在资源管理器中打开下载目录（Windows）"""
+    album_id = normalize_id(album_id)
+    album_dir = os.path.join(DOWNLOADS_DIR, album_id)
+    if not os.path.isdir(album_dir):
+        raise ValueError(f"本地没有 JM{album_id} 的下载目录")
+    os.startfile(album_dir)
