@@ -1,5 +1,12 @@
 # 📥 JM Downloader
 
+![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
+![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
+![License](https://img.shields.io/badge/License-GPL--3.0-green)
+![Release](https://img.shields.io/github/v/release/qwwqeras1145-bot/jm-downloader)
+![Stars](https://img.shields.io/github/stars/qwwqeras1145-bot/jm-downloader)
+
+
 > 禁漫天堂（JM）Windows 本地下载工具 · 免安装单文件 exe · 网页图形界面 + 命令行双模式
 
 基于开源库 [jmcomic](https://github.com/hect0x7/jmcomic) 封装，一键搜索、查看详情、批量下载并自动打包 ZIP，开箱即用，无需安装 Python 环境。
