@@ -124,6 +124,9 @@ function showStatus(s){
   if(s.total>0){
     const pct=Math.min(100,Math.round(s.current/s.total*100));
     html+=`<div class="bar"><i style="width:${pct}%"></i></div>`;
+  }else if(s.running){
+    html+=`<div class="bar"><i style="width:58%"></i></div>`;
+    if(s.current>0) html+=`<div style="color:var(--dim);font-size:12px;margin-top:4px">已获取 ${s.current} 张图片</div>`;
   }
   if(s.done&&s.ok){
     if(s.zip_path) html+=`<br><a href="/api/file?p=${encodeURIComponent(s.zip_path)}" target="_blank">⬇️ 下载 ZIP 压缩包</a>`;
