@@ -1,0 +1,17 @@
+# 下载内容
+downloads/
+batch_log.txt
+
+# PyInstaller 产物
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 其他
+*.log
+.DS_Store
