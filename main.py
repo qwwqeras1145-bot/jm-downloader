@@ -41,14 +41,25 @@ def print_json(obj):
 
 
 def wait_download(title="下载"):
-    """等待当前下载任务结束"""
+    """等待当前下载任务结束，显示实时进度条（含百分比）"""
     import time
     while True:
         s = core.get_state()
         if s["done"]:
+            print()
             return s
-        print(f"\r⏳ {title}: {s['msg']} ({s['current']}/{s['total']})", end="", flush=True)
-        time.sleep(0.8)
+        cur = int(s.get("current", 0) or 0)
+        total = int(s.get("total", 0) or 0)
+        msg = (s.get("msg") or "").strip()
+        if total > 0:
+            pct = min(100, int(cur * 100 / total))
+            bar_len = 22
+            filled = min(bar_len, int(bar_len * cur / total))
+            bar = "█" * filled + "░" * (bar_len - filled)
+            print(f"\r📥 {title}: [{bar}] {pct:3d}% ({cur}/{total}) {msg[:28]}", end="", flush=True)
+        else:
+            print(f"\r⏳ {title}: {msg} (已获取 {cur} 张)", end="", flush=True)
+        time.sleep(0.5)
 
 
 # ---------------- 启动菜单（无参数双击） ----------------
