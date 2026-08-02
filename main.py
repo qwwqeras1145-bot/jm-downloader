@@ -10,6 +10,7 @@ JM Downloader 入口
     jm-downloader.exe dl <漫画ID>              下载并打包 zip
     jm-downloader.exe batch <ID1 ID2 ...>      批量下载多本
     jm-downloader.exe random                   随机推荐
+    jm-downloader.exe history                  本地下载记录
 """
 import argparse
 import json
@@ -87,6 +88,19 @@ def start_launcher():
         start_web_mode()
 
 
+def _print_history():
+    """打印本地下载记录"""
+    items = core.history()
+    if not items:
+        print("📭 暂无下载记录")
+        return
+    print(f"📚 本地已下载 {len(items)} 本：")
+    for it in items:
+        size = it["size"]
+        sz = f"{size/1048576:.1f} MB" if size >= 1048576 else f"{size/1024:.0f} KB"
+        print(f"  JM{it['id']}   {it['files']} 张   {sz}")
+
+
 def cli_menu():
     """简单的命令行交互模式"""
     print("💻 命令行模式（输入 help 查看命令，exit 退出）")
@@ -110,6 +124,7 @@ def cli_menu():
             print("  dl <ID>            下载并打包 zip")
             print("  batch <ID ID ...>  批量下载")
             print("  random             随机推荐")
+            print("  history            本地下载记录")
             print("  exit               退出")
             continue
         try:
@@ -136,6 +151,8 @@ def cli_menu():
                 for r in s["results"]:
                     mark = "✅" if r["ok"] else "❌"
                     print(f"  {mark} JM{r['id']}：{r.get('files', '') and (str(r['files']) + ' 张') or r.get('error', '失败')}")
+            elif cmd == "history":
+                _print_history()
             else:
                 print(f"❓ 未知命令: {cmd}（输入 help 查看帮助）")
         except Exception as e:
