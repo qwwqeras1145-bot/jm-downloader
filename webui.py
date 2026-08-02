@@ -86,11 +86,11 @@ a{color:var(--accent)}
 
   <div class="card">
     <div class="row"><b style="font-size:14px">📥 批量导入下载</b></div>
-    <textarea id="batchIds" placeholder="每行一个漫画 ID，例如：&#10;1114751&#10;123456&#10;789012"></textarea>
+    <textarea id="batchIds" placeholder="每行一个漫画 ID，支持纯数字 / JM 前缀 / 完整链接：&#10;1114751&#10;JM123456&#10;https://18comic.vip/album/789012/"></textarea>
     <div class="row" style="margin-top:8px">
       <button onclick="doBatch()">🚀 批量下载</button>
       <button class="ghost" onclick="loadHistory()">📚 下载历史</button>
-      <span class="hint">支持空格 / 逗号 / 换行分隔 ID</span>
+      <span class="hint">支持空格 / 逗号 / 换行分隔，粘贴链接也能自动识别</span>
     </div>
   </div>
 
@@ -217,11 +217,31 @@ async function loadHistory(){
       g.innerHTML=list.map(it=>`
         <div class="item" style="cursor:default">
           <div class="id">JM${esc(it.id)}</div>
-          <div class="t" style="min-height:0">本地 ${it.files} 张图片</div>
-          <div class="a">${it.zip?`<a href="/api/file?p=${encodeURIComponent(it.zip)}">⬇️ ZIP</a>`:'未打包'}</div>
+          <div class="t" style="min-height:0">${it.files} 张图片 · ${fmtSize(it.size||0)}</div>
+          <div class="a">
+            ${it.zip?`<a href="/api/file?p=${encodeURIComponent(it.zip)}">⬇️ ZIP</a>`:'未打包'}
+            · <a href="#" onclick="openDir('${esc(it.id)}');return false;">📂 目录</a>
+            · <a href="#" onclick="delItem('${esc(it.id)}');return false;" style="color:var(--err)">🗑️ 删除</a>
+          </div>
         </div>`).join('');
     }
   }catch(e){document.getElementById('resultsTitle').textContent='⚠️ '+e.message}
+}
+function fmtSize(n){
+  if(n>=1048576) return (n/1048576).toFixed(1)+' MB';
+  if(n>=1024) return (n/1024).toFixed(0)+' KB';
+  return n+' B';
+}
+async function openDir(id){
+  try{await api('/api/open?p='+encodeURIComponent(id));}
+  catch(e){alert('⚠️ '+e.message)}
+}
+async function delItem(id){
+  if(!confirm('确定删除 JM'+id+' 的本地文件吗？')) return;
+  try{
+    await api('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+    loadHistory();
+  }catch(e){alert('⚠️ '+e.message)}
 }
 </script>
 </body>
@@ -253,6 +273,9 @@ def build_handler() -> type:
                     self._send_json(core.get_state())
                 elif path == "/api/history":
                     self._send_json({"items": core.history()})
+                elif path == "/api/open":
+                    core.open_dir(qs.get("p", [""])[0])
+                    self._send_json({"ok": True})
                 elif path == "/api/file":
                     self._send_file(qs.get("p", [""])[0])
                 else:
@@ -277,6 +300,9 @@ def build_handler() -> type:
                     ids = body.get("ids") or []
                     total = core.start_batch(ids)
                     self._send_json({"ok": True, "total": total})
+                elif self.path == "/api/delete":
+                    core.delete_album(body.get("id", ""))
+                    self._send_json({"ok": True})
                 else:
                     self._send_json({"error": "404"}, 404)
             except Exception as e:
