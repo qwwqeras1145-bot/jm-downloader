@@ -16,7 +16,7 @@ import traceback
 import logging
 logging.disable(logging.INFO)
 
-APP_VERSION = "v1.0.3"
+APP_VERSION = "v1.0.4"
 GITHUB_RELEASE_API = "https://api.github.com/repos/qwwqeras1145-bot/jm-downloader/releases/latest"
 
 # ---------------- 路径 ----------------
@@ -250,6 +250,19 @@ def _download_one(album_id, clean=False):
     album_dir = os.path.join(DOWNLOADS_DIR, album_id)
     if clean and os.path.isdir(album_dir):
         shutil.rmtree(album_dir, ignore_errors=True)
+    # v1.0.4 断点续传增强：清理损坏的半截文件（<10KB 视为下载中断产物），其余已存在图片自动跳过
+    if os.path.isdir(album_dir):
+        removed = 0
+        for fn in os.listdir(album_dir):
+            p = os.path.join(album_dir, fn)
+            if os.path.isfile(p) and os.path.getsize(p) < 10 * 1024:
+                os.remove(p)
+                removed += 1
+        if removed:
+            _set_state(msg=f"🩹 已清理 {removed} 个损坏的半截文件，继续补全剩余图片")
+        exist_n = _count_images(album_dir)
+        if exist_n:
+            _set_state(msg=f"♻️ 断点续传：已有 {exist_n} 张图片，仅补全缺失部分")
     opt = make_option()
     import jmcomic
     jmcomic.download_album(int(album_id), option=opt)
@@ -559,3 +572,177 @@ def is_bookmarked(album_id):
     except Exception:
         return False
     return any(it.get("id") == album_id for it in list_bookmarks())
+
+
+# ================= v1.0.4 =================
+# 定时下载 / 追更订阅 / 封面墙 / 局域网 IP
+
+TIMERS_PATH = os.path.join(base_dir(), "timers.json")
+SUB_STATE_PATH = os.path.join(base_dir(), "subscribe_state.json")
+COVERS_DIR = os.path.join(base_dir(), "covers")
+
+
+def _now_str(fmt="%Y-%m-%d %H:%M"):
+    import time
+    return time.strftime(fmt)
+
+
+# ---------- 定时下载 ----------
+
+def list_timers():
+    items = _load_json(TIMERS_PATH, [])
+    return items if isinstance(items, list) else []
+
+
+def add_timer(album_id, hhmm="00:00", tag=""):
+    """新增定时任务：每天 hhmm（HH:MM）自动下载 album_id"""
+    album_id = normalize_id(album_id)
+    if not re.fullmatch(r"\d{2}:\d{2}", str(hhmm or "")):
+        raise ValueError("时间格式应为 HH:MM，例如 22:30")
+    items = list_timers()
+    t = {"id": album_id, "time": hhmm, "tag": str(tag or ""), "last_run": "", "enabled": True}
+    items = [it for it in items if it["id"] != album_id]  # 同一本只保留一个定时
+    items.append(t)
+    _save_json(TIMERS_PATH, items)
+    return t
+
+
+def remove_timer(album_id):
+    album_id = normalize_id(album_id)
+    items = list_timers()
+    new = [it for it in items if it["id"] != album_id]
+    _save_json(TIMERS_PATH, new)
+    return len(items) != len(new)
+
+
+def run_due_timers():
+    """检查并触发所有到点且今天未执行的定时任务，返回触发的列表"""
+    import time
+    now_hm = time.strftime("%H:%M")
+    today = time.strftime("%Y-%m-%d")
+    fired = []
+    items = list_timers()
+    for it in items:
+        if not it.get("enabled", True):
+            continue
+        if it.get("time") == now_hm and it.get("last_run") != today:
+            it["last_run"] = today
+            fired.append(it)
+            _set_state(msg=f"⏰ 定时任务触发：自动下载 JM{it['id']}")
+            try:
+                if get_state()["running"]:
+                    _set_state(msg=f"⏰ JM{it['id']} 定时任务等待队列...")
+                    threading.Thread(target=_download_worker, args=(it["id"],), daemon=True).start()
+                else:
+                    start_download(it["id"])
+            except Exception as e:
+                traceback.print_exc()
+    if fired:
+        _save_json(TIMERS_PATH, items)
+    return [{"id": t["id"], "time": t["time"]} for t in fired]
+
+
+# ---------- 追更订阅 ----------
+
+def set_subscribe(album_id, on=True):
+    """把书签标记为追更/取消追更（自动下载新章节用）"""
+    album_id = normalize_id(album_id)
+    items = list_bookmarks()
+    for it in items:
+        if it.get("id") == album_id:
+            it["sub"] = bool(on)
+            _save_json(BOOKMARKS_PATH, items)
+            return True
+    # 不在书签里则自动加入书签并订阅
+    add_bookmark(album_id)
+    items = list_bookmarks()
+    for it in items:
+        if it.get("id") == album_id:
+            it["sub"] = bool(on)
+            _save_json(BOOKMARKS_PATH, items)
+            return True
+    return False
+
+
+def check_subscriptions():
+    """检查所有追更书签是否有更新（对比本地记录的最近更新时间）
+
+    返回 [{'id','title','old_time','new_time'}]，并同步订阅状态文件
+    """
+    import time
+    st = _load_json(SUB_STATE_PATH, {}) or {}
+    updates = []
+    for bm in list_bookmarks():
+        if not bm.get("sub"):
+            continue
+        aid = bm["id"]
+        try:
+            a = about(aid)
+            new_time = str(a.get("update_time") or a.get("time") or "")
+            if not new_time:
+                continue
+            old = st.get(aid, "")
+            if old and old != new_time:
+                updates.append({"id": aid, "title": a.get("title", bm.get("title", "")),
+                                "old_time": old, "new_time": new_time})
+            st[aid] = new_time
+        except Exception:
+            pass
+    _save_json(SUB_STATE_PATH, st)
+    return updates
+
+
+# ---------- 封面墙 ----------
+
+def export_covers():
+    """把已下载漫画的封面复制到 covers/ 并生成封面墙 HTML，返回 (html_path, count)"""
+    ensure_dirs()
+    os.makedirs(COVERS_DIR, exist_ok=True)
+    html_path = os.path.join(COVERS_DIR, "covers_wall.html")
+    cards = []
+    n = 0
+    if os.path.isdir(DOWNLOADS_DIR):
+        for aid in sorted(os.listdir(DOWNLOADS_DIR), key=lambda x: int(x) if x.isdigit() else 0, reverse=True):
+            adir = os.path.join(DOWNLOADS_DIR, aid)
+            if not os.path.isdir(adir) or not aid.isdigit():
+                continue
+            imgs = sorted(f for f in os.listdir(adir) if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")))
+            if not imgs:
+                continue
+            src = os.path.join(adir, imgs[0])
+            dst = os.path.join(COVERS_DIR, f"{aid}.jpg")
+            try:
+                shutil.copyfile(src, dst)
+                total = _count_images(adir)
+                cards.append(f'<a class="c" href="../downloads/{aid}/" target="_blank">'
+                             f'<img loading="lazy" src="{aid}.jpg"><span>JM{aid} · {total}P</span></a>')
+                n += 1
+            except Exception:
+                pass
+    html = f"""<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>📚 我的封面墙（{n} 本）</title><style>
+body{{margin:0;background:#0f1117;color:#e8eaf0;font-family:system-ui}}
+h1{{text-align:center;padding:18px;font-size:20px;color:#9aa0b0}}
+.wall{{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;padding:0 18px 30px}}
+.c{{text-decoration:none;color:#e8eaf0;text-align:center}}
+.c img{{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:8px;background:#171a23}}
+.c span{{display:block;font-size:12px;margin-top:6px;color:#9aa0b0}}</style></head>
+<body><h1>📚 我的封面墙 · 共 {n} 本</h1><div class="wall">{"".join(cards)}</div></body></html>"""
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    return html_path, n
+
+
+# ---------- 局域网 IP（远程控制提示） ----------
+
+def get_lan_ip():
+    """获取本机局域网 IP，方便手机远程访问"""
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
