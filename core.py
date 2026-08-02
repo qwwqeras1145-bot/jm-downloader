@@ -216,13 +216,17 @@ def _count_images(album_dir):
         return 0
 
 
-def _download_one(album_id):
-    """同步下载一本漫画，返回 (zip_path, album_dir, 图片数)。失败抛异常"""
+def _download_one(album_id, clean=False):
+    """同步下载一本漫画，返回 (zip_path, album_dir, 图片数)。失败抛异常
+
+    clean=False（默认）：断点续传 —— 已下载的图片自动跳过，只补缺失部分
+                      （jmcomic 内置多线程 30 并发 + 已存在图片跳过机制）
+    clean=True：清空旧目录强制重新下载
+    """
     album_id = str(album_id)
     ensure_dirs()
     album_dir = os.path.join(DOWNLOADS_DIR, album_id)
-    # 清空旧目录，确保干净下载（进度统计也才准确）
-    if os.path.isdir(album_dir):
+    if clean and os.path.isdir(album_dir):
         shutil.rmtree(album_dir, ignore_errors=True)
     opt = make_option()
     import jmcomic
