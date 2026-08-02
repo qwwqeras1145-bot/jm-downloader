@@ -533,9 +533,7 @@ async function checkSub(){
   try{
     const j=await api('/api/sub_check');
     const u=j.updates||[];
-    alert(u.length?('🔔 有 '+u.length+' 本更新了！
-'+u.map(x=>'JM'+x.id+' '+(x.title||'')).join('
-')):'✅ 追更的漫画都没有更新');
+    alert(u.length?('🔔 有 '+u.length+' 本更新了！\n'+u.map(x=>'JM'+x.id+' '+(x.title||'')).join('\n')):'✅ 追更的漫画都没有更新');
   }catch(e){alert('⚠️ '+e.message)}
 }
 // 封面墙
