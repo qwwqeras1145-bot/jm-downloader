@@ -6,6 +6,7 @@ jm-downloader 核心逻辑：查询 / 搜索 / 排行 / 下载 / ZIP 打包 / �
 import os
 import re
 import sys
+import json
 import zipfile
 import shutil
 import threading
@@ -14,6 +15,9 @@ import traceback
 # 仅屏蔽 jmcomic 的 INFO 日志，保留 WARNING/ERROR 便于排查问题
 import logging
 logging.disable(logging.INFO)
+
+APP_VERSION = "v1.0.3"
+GITHUB_RELEASE_API = "https://api.github.com/repos/qwwqeras1145-bot/jm-downloader/releases/latest"
 
 # ---------------- 路径 ----------------
 
@@ -61,9 +65,10 @@ def make_option():
         opt.dir_rule = DirRule("Bd/Aid", base_dir=DOWNLOADS_DIR)
     except Exception:
         pass
-    # 代理支持：环境变量 JM_PROXY 或 HTTPS_PROXY / HTTP_PROXY
+    # 代理：优先取网页版设置保存的 config.json，其次环境变量
     proxy = (
-        os.environ.get("JM_PROXY")
+        get_proxy()
+        or os.environ.get("JM_PROXY")
         or os.environ.get("HTTPS_PROXY")
         or os.environ.get("HTTP_PROXY")
     )
@@ -258,6 +263,21 @@ def _download_one(album_id, clean=False):
     return zip_path, album_dir, files
 
 
+def _download_one_retry(album_id, retries=3):
+    """下载一本漫画，失败自动重试（网络波动时很有用）"""
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            return _download_one(album_id)
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                _set_state(msg=f"⚠️ 第 {attempt} 次下载失败，正在重试 ({retries - attempt} 次剩余)...")
+                import time
+                time.sleep(2)
+    raise last_err
+
+
 def _poller_worker(album_id, stop, prefix=""):
     """后台轮询统计已下载图片数，更新 STATE"""
     album_dir = os.path.join(DOWNLOADS_DIR, str(album_id))
@@ -277,14 +297,16 @@ def _download_worker(album_id):
                    msg=f"正在下载 JM{album_id} ...")
         stop = threading.Event()
         threading.Thread(target=_poller_worker, args=(album_id, stop), daemon=True).start()
-        zip_path, album_dir, files = _download_one(album_id)
+        zip_path, album_dir, files = _download_one_retry(album_id)
         stop.set()
         _set_state(current=files, total=files, msg="打包完成", zip_path=zip_path)
         _set_state(done=True, ok=True, running=False,
                    msg=f"✅ JM{album_id} 下载完成，共 {files} 张图片")
+        notify("JM Downloader", f"✅ JM{album_id} 下载完成，共 {files} 张图片")
     except Exception as e:
         _set_state(done=True, ok=False, running=False, error=str(e),
                    msg=f"❌ 失败: {e}")
+        notify("JM Downloader", f"❌ JM{album_id} 下载失败：{str(e)[:80]}")
         traceback.print_exc()
 
 
@@ -325,7 +347,7 @@ def _batch_worker(ids):
             prefix = f"第 {idx}/{len(ids)} 本 JM{aid}："
             threading.Thread(target=_poller_worker, args=(aid, stop, prefix), daemon=True).start()
             try:
-                zip_path, album_dir, files = _download_one(aid)
+                zip_path, album_dir, files = _download_one_retry(aid)
                 results.append({"id": aid, "ok": True, "zip": zip_path, "files": files})
             except Exception as e:
                 results.append({"id": aid, "ok": False, "error": str(e)})
@@ -337,6 +359,7 @@ def _batch_worker(ids):
             else f"批量下载结束：成功 {ok_n}/{len(ids)}"
         _set_state(done=True, ok=ok_n == len(ids), running=False, msg=msg,
                    results=list(results))
+        notify("JM Downloader", f"{msg}（成功 {ok_n}/{len(ids)} 本）")
     except Exception as e:
         _set_state(done=True, ok=False, running=False, error=str(e),
                    msg=f"❌ 批量任务异常: {e}", results=list(results))
@@ -393,3 +416,146 @@ def open_dir(album_id):
     if not os.path.isdir(album_dir):
         raise ValueError(f"本地没有 JM{album_id} 的下载目录")
     os.startfile(album_dir)
+
+
+# ---------------- v1.0.3 新增：看图 / 更新检查 / 通知 ----------------
+
+def list_images(album_id):
+    """返回某本已下载漫画的图片文件名列表（按文件名排序）"""
+    album_id = normalize_id(album_id)
+    album_dir = os.path.join(DOWNLOADS_DIR, album_id)
+    if not os.path.isdir(album_dir):
+        raise ValueError(f"本地没有 JM{album_id} 的下载目录")
+    names = [f for f in os.listdir(album_dir)
+             if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))]
+    # 按页码自然排序：001.jpg < 002.jpg < ... < 010.jpg
+    names.sort(key=lambda f: (len(f), f))
+    return names
+
+
+def notify(title, msg):
+    """Windows 桌面通知（右下角气泡），失败时静默忽略"""
+    try:
+        import subprocess
+        ps = (
+            "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');"
+            "$n=New-Object System.Windows.Forms.NotifyIcon;"
+            "$n.Icon=[System.Drawing.SystemIcons]::Information;"
+            f"$n.BalloonTipTitle='{title}';"
+            f"$n.BalloonTipText='{msg}';"
+            "$n.Visible=$true;$n.ShowBalloonTip(3000);"
+            "Start-Sleep -Seconds 4;$n.Dispose()"
+        )
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        pass
+
+
+def check_update():
+    """检查 GitHub 最新版本，返回 {'current','latest','url','has_update'}"""
+    import urllib.request
+    info = {"current": APP_VERSION, "latest": APP_VERSION, "url": "", "has_update": False}
+    try:
+        req = urllib.request.Request(GITHUB_RELEASE_API, headers={
+            "User-Agent": "jm-downloader", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        latest = (data.get("tag_name") or "").lstrip("v")
+        info["latest"] = "v" + latest
+        info["url"] = data.get("html_url", "")
+        def _ver(v):
+            return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+        info["has_update"] = _ver(latest) > _ver(APP_VERSION)
+    except Exception:
+        pass
+    return info
+
+
+# ---------------- v1.0.3：配置 / 书签 / 代理 ----------------
+
+CONFIG_PATH = os.path.join(base_dir(), "config.json")
+BOOKMARKS_PATH = os.path.join(base_dir(), "bookmarks.json")
+
+
+def _load_json(path, default):
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return default
+
+
+def _save_json(path, obj):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def get_config():
+    """读取本地配置文件（代理、主题等）"""
+    cfg = _load_json(CONFIG_PATH, {})
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def save_config(**kw):
+    """保存配置项，返回更新后的完整配置"""
+    cfg = get_config()
+    cfg.update(kw)
+    _save_json(CONFIG_PATH, cfg)
+    return cfg
+
+
+def get_proxy():
+    """读取已保存的代理地址（网页设置界面写入）"""
+    return str(get_config().get("proxy", "") or "").strip()
+
+
+def set_proxy(proxy):
+    """保存代理地址，空值表示清除"""
+    proxy = str(proxy or "").strip()
+    save_config(proxy=proxy)
+    return proxy
+
+
+def list_bookmarks():
+    """书签列表：[{id, title, time}]，最新在前"""
+    items = _load_json(BOOKMARKS_PATH, [])
+    return items if isinstance(items, list) else []
+
+
+def add_bookmark(album_id, title=""):
+    """添加书签，已存在返回 False"""
+    album_id = normalize_id(album_id)
+    items = list_bookmarks()
+    for it in items:
+        if it.get("id") == album_id:
+            return False
+    import time
+    items.insert(0, {"id": album_id, "title": str(title or ""), "time": int(time.time())})
+    _save_json(BOOKMARKS_PATH, items)
+    return True
+
+
+def remove_bookmark(album_id):
+    """删除书签，返回是否删除了某项"""
+    album_id = normalize_id(album_id)
+    items = list_bookmarks()
+    new = [it for it in items if it.get("id") != album_id]
+    _save_json(BOOKMARKS_PATH, new)
+    return len(items) != len(new)
+
+
+def is_bookmarked(album_id):
+    """判断某本是否已在书签中"""
+    try:
+        album_id = normalize_id(album_id)
+    except Exception:
+        return False
+    return any(it.get("id") == album_id for it in list_bookmarks())
